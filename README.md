@@ -964,7 +964,9 @@ def accuracy(output, target):
 
 （1）GhostNet
 
-
+```
+Epoch 59:Acc 0.604 Recall 0.501
+```
 
 （2）ShuffleNetV2
 
