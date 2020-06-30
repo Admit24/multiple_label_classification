@@ -970,6 +970,352 @@ Epoch 59:Acc 0.604 Recall 0.501
 
 （2）ShuffleNetV2
 
+```
+Epoch 59:Acc 0.676 Recall 0.613
+```
 
 
-（3）MobileNetV2
+
+4.测试
+
+测试代码test_checkpoint-029.py：
+
+```python
+# 此脚本用于测试集群上训练好的模型精度和召回率是否都达到80%以上
+
+import torch
+import torch.nn as nn
+import torchvision
+from PIL import Image
+from PIL import ImageFile
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+from torchvision import transforms
+from torch.utils.data import DataLoader
+#from network import ShuffleNetV1
+from network_108 import ShuffleNetV2
+import os
+import subprocess
+import math
+import numpy as np
+
+def make_label(label_path):
+    count = 0
+    #with open(label_path,'r',encoding='utf-8') as f:
+    with open(label_path,'r') as f:
+        dic = []
+        for line in f.readlines():
+            line = line.strip('\n') # 去掉换行符
+            b=line.split(':') #将每一行以冒号为分隔符转换成列表
+            del b[1]
+            b.append(count)
+            dic.append(b)
+            count = count + 1
+        dic=dict(dic)
+    return dic
+def make_dataset(dir, dic):
+    images = []
+    for line in open(dir):
+        line = line.strip('\n')
+        b = line.split(' ') # 以空格为分隔符将一行字符转换为列表
+        length = len(b) # 获取列表b的长度
+        path = b[0] # 获取图片路径
+        label_array = np.zeros(108) # 全0的标签数组
+        for i in range(length - 2):
+            label_array[dic[b[i + 2]]] = 1 #所属的类别置1
+        item = (path, label_array)
+        images.append(item)
+    return images
+
+
+def accuracy(output, target):
+    acc = recall = 0
+    pred = torch.sigmoid(output).ge(0.5).cpu()
+    pred = [pred_one.nonzero().reshape(-1).numpy().tolist() for pred_one in pred]
+    #print(pred)
+    target = target.cpu()
+    target = [target_one.nonzero().reshape(-1).numpy().tolist() for target_one in target]
+    #print(target)
+    #print(len(target))
+    for i in range(len(target)):
+        if len(pred[i]) != 0:
+            acc += len(set(pred[i])&set(target[i])) / (len(pred[i])+1e-7)
+            recall += len(set(pred[i])&set(target[i])) / (len(target[i])+1e-7)
+    acc = acc / len(target)
+    recall = recall / len(target)
+    return torch.tensor(acc).cuda().float(), torch.tensor(recall).cuda().float()
+
+
+device = torch.device('cuda')
+
+# 数据预处理
+data_transform = transforms.Compose([
+    transforms.Resize(224),
+    transforms.ToTensor(),  # 把一个取值范围是[0,255]的PIL.Image或者shape为(H,W,C)的numpy.ndarray，
+    # 转换成形状为[C,H,W]，取值范围是[0,1]的torch.FloadTensor
+    transforms.Normalize(mean=[0.5, 0.5, 0.5],
+                         std=[0.5, 0.5, 0.5])  # 给定均值：(R,G,B) 方差：>（R，G，B），将会把Tensor正则化。
+    # 即：Normalized_image=(image-mean)/std。
+])
+
+
+# 加载模型
+print('load ShuffleNetV2 model begin!')
+#model = ShuffleNetV1(group=3)
+model = ShuffleNetV2(model_size='1.0x')
+#model = ShuffleNetV2()
+#model = nn.DataParallel(model)
+#model = torch.nn.DataParallel(model)
+#checkpoint = torch.load('./model_best_0_5.pth.tar')
+#model.load_state_dict(checkpoint['state_dict'])
+#model.load_state_dict(torch.load('./checkpoint-029.pth'))
+model.load_state_dict(torch.load('./checkpoint-029.pth')['model'])
+model.eval()  # 固定batchnorm，dropout等，一定要有
+model = model.to(device)
+print('load ShuffleNetV2 model done!')
+
+
+torch.no_grad()
+
+
+label_path = './labelsmap.txt'
+test_path = './test.txt'
+dic = make_label(label_path)
+#print(dic)
+images = make_dataset(test_path, dic)
+length = len(images)
+#print(images[0])
+count = 0
+acc = 0
+recall = 0
+print('test start!')
+for i in range(length):
+    print('count:' + str(count))
+    item = images[i]
+    path = item[0]
+    label = item[1]
+    label = label.reshape((1, 108)) # 把标签变成batch_size的形式，即使batch_size为1
+    Tensor_label = torch.from_numpy(label) # numpy数组转Tensor
+    #print('path:' + path)
+    #print('label:' + str(label))
+    #print('Tensor_label:' + str(Tensor_label))
+    #print(type(path))
+    #print(type(label))
+    #print(type(Tensor_label))
+    try:
+        img = Image.open(path)
+        img = data_transform(img)
+        img = img.unsqueeze(0)
+        img_ = img.to(device)
+        output = model(img_)
+        pred = torch.sigmoid(output).ge(0.5)
+        count = count + 1
+        print(pred)
+        print(Tensor_label)
+        acc_tmp, recall_tmp = accuracy(output, Tensor_label)
+        print('acc_tmp:' + str(acc_tmp))
+        print('recall_tmp:' + str(recall_tmp))
+        acc = acc + acc_tmp
+        recall = recall + recall_tmp
+        print('acc:' + str(acc/count))
+        print('recall:' + str(recall/count))
+    except Exception as e:
+        continue
+
+print('final acc:' + str(acc/count))
+print('final recall:' + str(recall/count))
+```
+
+此测试代码有两个注意的地方：
+
+1.使用data_transform将图像灰度值转换到[-1,1]之间，代码为：
+
+```python
+data_transform = transforms.Compose([
+    transforms.Resize(224),
+    transforms.ToTensor(),  # 把一个取值范围是[0,255]的PIL.Image或者shape为(H,W,C)的numpy.ndarray，
+    # 转换成形状为[C,H,W]，取值范围是[0,1]的torch.FloadTensor
+    transforms.Normalize(mean=[0.5, 0.5, 0.5],
+                         std=[0.5, 0.5, 0.5])  # 给定均值：(R,G,B) 方差：>（R，G，B），将会把Tensor正则化。
+    # 即：Normalized_image=(image-mean)/std。
+])
+```
+
+ToTensor()能够把灰度范围从[0,255]变换到[0,1]之间，而后面的transform.Normalize()则把[0,1]变换到[-1,1]。具体地说，对每个通道而言，Normalize执行操作：img = (img-mean)/std，所以需要将三个通道的均值和标准差都设置为0.5，就可以将图像灰度映射到[-1,1]之间；
+
+2.在加载模型遇到的问题经过调试，正确的加载代码为：
+
+```python
+model = ShuffleNetV2(model_size='1.0x')
+model.load_state_dict(torch.load('./checkpoint-029.pth')['model'])
+```
+
+（1）由于线上训练的模型是用python 2.x版本来训练的，如果测试时使用python3.x的版本来加载测试，则会报错：
+
+UnicodeDecodeError: 'ascii' codec can't decode byte 0x9a in position 0: ordinal not in range(128)
+
+解决方法是更换python 2.x版本进行模型加载和测试。
+
+（2）如果网络定义与模型参数加载对不上，如：
+
+```python
+model = ShuffleNetV2()
+```
+
+默认为1.5x，但是训练阶段设置的宽度为1.0x，会报错：
+
+RuntimeError: Error(s) in loading state_dict for ShuffleNetV2:**size mismatch** for features.0.branch_main.0.weight:.......
+
+此报错说明二者不匹配（即size mismatch），所以一定要保证网络定义和模型参数加载一致。
+
+（3）模型保存为tar包或者pth文件时，并不一定只有训好的网络参数。一般将每个epoch训完的模型保存为一个字典，每个键对应一个值，所以要搞清楚网络参数对应的那个键是什么，才可以加载出网络参数，如：
+
+```python
+model.load_state_dict(torch.load('./checkpoint-029.pth'))
+```
+
+此时误以为pth文件只包含网络参数，所以导致报错：
+
+RuntimeError: Error(s) in loading state_dict for ShuffleNetV2:**Missing key(s)** in state_dict: "first_conv.0.weight”,......**Unexpected key(s)** in state_dict: "epoch", "optimizer", "model".
+
+此报错说明缺少相应的键"first_conv.0.weight,...”，并且遇到了多余的键"epoch", "optimizer", "model"。原因在于，加载到的pth文件实际上是一个字典文件，本身存在键"epoch", "optimizer", "model"，这些键对应的值分别为训练的epoch数，优化的方式，以及模型参数。所以正确的加载方式如下：
+
+```python
+model.load_state_dict(torch.load('./checkpoint-029.pth')['model'])
+```
+
+先加载出键”model”对应的值，即模型参数之后，才可以找到网络对应的键"first_conv.0.weight,...”
+
+
+
+测试结果：
+
+```
+......
+acc_tmp:tensor(1.0000, device='cuda:0')
+recall_tmp:tensor(1.0000, device='cuda:0')
+acc:tensor(0.5755, device='cuda:0')
+recall:tensor(0.4472, device='cuda:0')
+count:98179
+tensor([[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0,
+         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]],
+       device='cuda:0', dtype=torch.uint8)
+tensor([[0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+         0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 1., 0.,
+         0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+         0., 0., 0., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0.,
+         0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+         0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.]],
+       dtype=torch.float64)
+acc_tmp:tensor(1.0000, device='cuda:0')
+recall_tmp:tensor(1.0000, device='cuda:0')
+acc:tensor(0.5755, device='cuda:0')
+recall:tensor(0.4472, device='cuda:0')
+final acc:tensor(0.5755, device='cuda:0')
+final recall:tensor(0.4472, device='cuda:0')
+```
+
+结果显示，精度和召回率并没有达到80%以上，需要进一步研究原因。
+
+仔细研究后发现，是精度和召回率的测试函数计算方法有一些问题，分为四种情况：
+
+（1）模型预测的结果和标签都有1；
+
+（2）模型预测的结果有1，标签没有1；
+
+（3）标签有1，模型预测的结果没有1；
+
+（4）模型预测结果和标签都没有1；
+
+前三种情况，用当前的计算方法没有太大问题，第四种情况精度和召回率理论上应该计算为1，但是按照当前的方法计算为0，当测试集中的数据如果很多标签没有1的话，那么会出现较大误差，更改准确率和召回率计算函数如下，在accuracy2的基础之上增加了第四种预测情况：
+
+```python
+def accuracy3(output, target):
+    acc = recall = 0
+    pred = torch.sigmoid(output).ge(0.5)
+    print('pred:' + str(pred))
+    print('pred[1].nonzero():' + str(pred[1].nonzero()))
+    print('pred[1].nonzero().reshape():' + str(pred[1].nonzero().reshape(-1)))
+    pred = [pred_one.nonzero().reshape(-1).numpy().tolist() for pred_one in pred]
+    target = [target_one.nonzero().reshape(-1).numpy().tolist() for target_one in target]
+    print('pred:' + str(pred))
+    print('target:' + str(target))
+    for i in range(len(target)):
+        #print(pred[i])
+        #print(target[i])
+        # 如果模型预测和标签都没有1，则精度和召回率均视为1
+        if (len(pred[i]) == 0)&(len(target[i]) == 0):
+            acc += 1.0
+            recall += 1.0
+        else:
+            #print('set:' + str(set(pred[i])&set(target[i])))
+            acc += len(set(pred[i])&set(target[i])) / (len(pred[i]) + 1e-7)
+            recall += len(set(pred[i])&set(target[i])) / (len(target[i])+1e-7)
+    acc = acc / len(target)
+    recall = recall / len(target)
+    return torch.tensor(acc).float(), torch.tensor(recall).float()
+```
+
+使用更改之后的精度召回率测量函数再次测试集群上训好的模型以及单机上训好的模型，结果为：
+
+集群上训好的ShuffleNetV2模型结果（精度约为90%，召回率接近80%）：
+
+```
+......
+count:98179
+tensor([[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0,
+         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]],
+       device='cuda:0', dtype=torch.uint8)
+tensor([[0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+         0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 1., 0.,
+         0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+         0., 0., 0., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0.,
+         0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+         0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.]],
+       dtype=torch.float64)
+acc_tmp:tensor(1.0000, device='cuda:0')
+recall_tmp:tensor(1.0000, device='cuda:0')
+acc:tensor(0.9017, device='cuda:0')
+recall:tensor(0.7733, device='cuda:0')
+final acc:tensor(0.9017, device='cuda:0')
+final recall:tensor(0.7733, device='cuda:0')
+```
+
+单机上训好的ShuffleNetV2模型结果（测试结果比之前的测试结果也高了很多，都在70%以上）：
+
+```
+......
+count:98184
+tensor([[0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+         0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 1., 0.,
+         0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+         0., 0., 0., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0.,
+         0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+         0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.]],
+       device='cuda:0')
+tensor([[0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+         0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 1., 0.,
+         0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+         0., 0., 0., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0.,
+         0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+         0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.]],
+       dtype=torch.float64)
+acc_tmp:tensor(1.0000, device='cuda:0')
+recall_tmp:tensor(1.0000, device='cuda:0')
+acc:tensor(0.7989, device='cuda:0')
+recall:tensor(0.7318, device='cuda:0')
+final acc:tensor(0.7989, device='cuda:0')
+final recall:tensor(0.7318, device='cuda:0')
+```
+
+
+
+
+
+
+
