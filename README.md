@@ -1315,6 +1315,333 @@ final recall:tensor(0.7318, device='cuda:0')
 
 
 
+5.使用训好的模型测试一批业务数据，输出每张图像的标签，存为txt文件
+
+测试代码：test_business_data.py：
+
+```python
+#!coding=utf-8
+# 此脚本使用训好的宽度为1.0的ShuffleNetV2模型测试一批业务数据，并将识别结果存为txt文件
+
+import torch
+import torch.nn as nn
+import torchvision
+from PIL import Image
+from PIL import ImageFile
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+from torchvision import transforms
+from torch.utils.data import DataLoader
+#from network import ShuffleNetV1
+from network_108 import ShuffleNetV2
+import os
+import subprocess
+import math
+import numpy as np
+
+def make_label(label_path):
+    count = 0
+    #with open(label_path,'r',encoding='utf-8') as f:
+    with open(label_path,'r') as f:
+        dic = []
+        for line in f.readlines():
+            line = line.strip('\n') # 去掉换行符
+            b=line.split(':') #将每一行以冒号为分隔符转换成列表
+            del b[1]
+            b.append(count)
+            tmp = b[1]
+            b[1] = b[0]
+            b[0] = tmp
+            dic.append(b)
+            count = count + 1
+        dic=dict(dic)
+    return dic
+
+device = torch.device('cuda')
+
+# 数据预处理
+data_transform = transforms.Compose([
+    transforms.Resize(224),
+    transforms.ToTensor(),  # 把一个取值范围是[0,255]的PIL.Image或者shape为(H,W,C)的numpy.ndarray，
+    # 转换成形状为[C,H,W]，取值范围是[0,1]的torch.FloadTensor
+    transforms.Normalize(mean=[0.5, 0.5, 0.5],
+                         std=[0.5, 0.5, 0.5])  # 给定均值：(R,G,B) 方差：>（R，G，B），将会把Tensor正则化。
+    # 即：Normalized_image=(image-mean)/std。
+])
+
+
+# 加载模型
+print('load ShuffleNetV2 model begin!')
+#model = ShuffleNetV1(group=3)
+model = ShuffleNetV2(model_size='1.0x')
+#model = ShuffleNetV2()
+#model = nn.DataParallel(model)
+#model = torch.nn.DataParallel(model)
+#checkpoint = torch.load('./model_best_0_5.pth.tar')
+#model.load_state_dict(checkpoint['state_dict'])
+#model.load_state_dict(torch.load('./checkpoint-029.pth'))
+model.load_state_dict(torch.load('./checkpoint-029.pth')['model'])
+model.eval()  # 固定batchnorm，dropout等，一定要有
+model = model.to(device)
+print('load ShuffleNetV2 model done!')
+
+torch.no_grad()
+
+label_path = './labelsmap.txt' # 标签索引和对应的英文名
+business_label_result = './business_label_result.txt' # 业务数据标签存放处
+image_path = '/mnt/data1/gyy/multilabel/mobilenet/images/' # 业务数据文件夹
+dic = make_label(label_path) # 字典dic键为类别索引，值为对应的英文名称
+#print(dic[1])
+#print(type(dic[1]))
+
+print('test start!')
+count = 0 # 31685张正常图片（可以测试的图片），共33345张图片
+with open(business_label_result, 'w') as f: # 每次重新打开都要清空里面的内容，所以打开之后一次性把内容写完
+    for jpg in os.listdir(image_path):
+        path = image_path + jpg
+        try:
+            img = Image.open(path)
+            img = data_transform(img)
+            img = img.unsqueeze(0)
+            img_= img.to(device)
+            output = model(img_)
+            pred = torch.sigmoid(output).ge(0.5)
+            #print('pred:' + str(pred))
+            #print('pred[0]:' + str(pred[0]))
+            count = count + 1
+            print('current jpg:' + str(count))
+            f.write(jpg)
+            for i in range(len(pred[0])):
+                if pred[0][i]==1:
+                    f.write(' ' + dic[i])
+            f.write('\n') # 标签信息写完换行
+        except Exception as e:
+            continue
+```
+
+得到业务数据的识别结果，存为txt文件，如下：
+
+```
+01D26516-2A84-7393-9258-DA86E2CC6AD320190907.jpg
+77A32284-D9E7-BD54-684C-C8C991D1422C20191018.jpg
+9BD457F8-48C8-F2B6-7E2E-48F0EDFDE97620190418.jpg chatscreen
+D25DE0D6-AF63-8520-4032-40F01BAE5E1420181102.jpg person vehicle_interior
+41680CAD-C86C-5452-41BA-58B51CE1AA5C20190219.jpg
+A810ECEC-D38B-938C-0143-C99EBF1655F420190811.jpg person
+425ED3F6-4FB9-6E06-1BA6-72FEFCD8365220181224.jpg
+679FE138-4696-E300-A1DB-BD1B1DA8743C20181229.jpg outdoor sculpt
+610F23EB-0F92-BC0C-38ED-C4CAF651CEAF20190702.jpg
+1C07E4EC-8A37-7788-ED71-EBA43E22367F20190729.jpg outdoor
+791D99A4-0B51-DF7E-8025-5E1C46DC18B420190915.jpg
+AA5C5BEE-E00F-10CD-EBD6-77AC0F7D3C3E20191006.jpg flowers
+DAE792E6-566F-C81F-C744-81F4666247A020190401.jpg
+3540F04D-4FC3-DDE9-15D0-7F60296078DA20190330.jpg person
+A5C73999-24B1-62B9-0CB5-957914866A2E20190206.jpg person
+D6818799-9438-C7A9-D6C9-1D72842E0A1C20190421.jpg clouds sky water outdoor scenery
+95B1CF44-44C8-7311-9E95-E4F6140BC7AD20190130.jpg
+0F3BDE08-AF34-9915-0BE0-C073E03FEC9C20181031.jpg
+2FA21F6A-C99C-80C4-36D9-9DBF6415853720190910.jpg
+CBB95E9C-4CE2-5F4B-C876-22809C66FE3F20190715.jpg outdoor scenery
+......
+```
+
+
+
+6.业务数据测试结果分析
+
+从txt的结果中可以看出很多图像并没有被打上标签，有些图像被打上标签可能未必正确，需要进行分析，分析如下问题：
+
+1）未被打上标签的图像有哪些？未被打上标签的图像是因为不属于指定的类别，还是类别特征不明显导致没有打上相应的标签？
+
+2）观察打上标签的图像都是什么标签？统计各个标签的数量，就可以看出这批业务数据大致是什么类型的数据。选取数量最高的10-20个标签类别，在有标签的图像中，随机选取100-200张图像，依次根据这些标签统计每个类别的准确率，精度和召回率。
+
+（1）划分打上标签和没有打上标签的图像，并统计这批业务数据中数量最多前10个标签split_statistic.py
+
+```python
+# 划分有标签和没有标签的业务图像至不同的文件夹，并在有标签的图像当中统计各个类别的数量
+
+import subprocess
+
+label_path = './labelsmap.txt'
+business_data_result = './business_label_result.txt'
+
+# 获取标签字典，键为类别名称，值为类别名称出现的次数，所有类别次数均初始化为0
+def make_label(label_path):
+    with open(label_path,'r') as f:
+        dic = []
+        for line in f.readlines():
+            line = line.strip('\n') # 去掉换行符
+            b=line.split(':') #将每一行以冒号为分隔符转换成列表
+            del b[1]
+            b.append(0)
+            dic.append(b)
+        dic=dict(dic)
+    return dic
+
+def main():
+    dic = make_label(label_path)
+    #print(dic)
+    # 划分有标签和无标签的图像，并统计标签数量
+    with open(business_data_result,'r') as f:
+        for line in f.readlines():
+            line = line.strip('\n') # 去掉换行符
+            b=line.split(' ') #将每一行以冒号为分隔符转换成列表
+            if len(b)==1:
+                cmd = 'cp ./images/' + b[0] + ' ' + './image_without_label/'
+            else:
+                cmd = 'cp ./images/' + b[0] + ' ' + './image_with_label/'
+                for i in range(1, len(b)):
+                    dic[b[i]] += 1 # 相应的类别数加1
+            subprocess.call(cmd, shell=True)
+            #print(b[0])
+    print(dic)
+
+
+if __name__=='__main__':
+    main()
+```
+
+运行结果：
+
+划分了有标签的业务图像16110张和无标签业务图像15577张，并确定了各个标签类别出现的次数：
+
+```
+{'airport': 4, 'animal': 725, 'beach': 14, 'bear': 6, 'birds': 40, 'boats': 24, 'condom': 8, 'bridge': 18, 'buildings': 696, 'cars': 102, 'castle': 0, 'cat': 85, 'cityscape': 22, 'clouds': 1425, 'coral': 29, 'cow': 0, 'dog': 101, 'fire': 1, 'fish': 27, 'flowers': 481, 'food': 589, 'fox': 0, 'garden': 16, 'glacier': 4, 'grass': 80, 'harbor': 0, 'horses': 0, 'house': 27, 'lake': 251, 'leaf': 66, 'moon': 25, 'mountain': 130, 'nighttime': 455, 'ocean': 113, 'person': 8997, 'plane': 14, 'plants': 492, 'railroad': 6, 'rainbow': 4, 'road': 214, 'rocks': 37, 'sand': 0, 'sky': 2137, 'snow': 109, 'soccer': 9, 'sports': 46, 'street': 39, 'sunset': 18, 'sun': 15, 'surf': 0, 'swimmers': 0, 'tattoo': 1, 'temple': 0, 'tiger': 2, 'tower': 31, 'town': 0, 'train': 4, 'tree': 290, 'valley': 64, 'vehicle': 327, 'water': 883, 'wedding': 1, 'whales': 0, 'selfie': 4315, 'indoor': 921, 'outdoor': 5223, 'bus': 1, 'bicycle': 4, 'motorcycle': 47, 'basketball': 1, 'pool': 6, 'volleyball': 0, 'amusement': 25, 'waterpark': 7, 'danceroom': 12, 'bedroom': 112, 'gym': 47, 'chatscreen': 234, 'chatscreen_momo': 42, 'chatscreen_wechat': 26, 'game': 17, 'animation': 210, 'scenery': 1761, 'delicacy': 241, 'cooking': 0, 'rabbit': 1, 'guina_pig': 0, 'electronic_device': 90, 'cellphone': 28, 'monitor': 6, 'computer': 21, 'nightclub': 28, 'drink': 121, 'wine': 53, 'tea': 23, 'shopping_mall': 11, 'station': 5, 'dining_room': 32, 'vehicle_interior': 146, 'badmington_court': 0, 'square': 0, 'car_show': 35, 'car_key': 0, 'painting': 0, 'art_exhibition': 3, 'sculpt': 39, 'villa': 8, 'selfie_mobile': 100}
+```
+
+
+
+（2）分析测试结果
+
+1）分析无标签图像的特点
+
+无标签的业务图像和有标签的业务图像各占约50%，分别为15576张，16109张。无标签的业务图像中约有40%文字或图案类的图像，这些图像与108个类别没有关系，故没有打上标签；剩下的和108个类别相关，但是也没有被打上标签，这些在每个类别当中会具体分析原因（体现在召回率低）。
+
+
+
+2）分析有标签图像中，数量最多的前11个标签各个类别的准确率，精度和召回率
+
+top-1:'person',8997
+top-2:'outdoor',5223
+top-3:'selfie',4315
+top-4:'sky',2137
+top-5:'scenery',1761
+top-6:'clouds',1425
+top-7:'indoor',921
+top-8:'water',883
+top-9:'animal',725
+top-10:'building',696
+top-11:'food',589
+
+每个类别随机选择100张图像（有标签和无标签各随机选择50张）来统计精度和召回率acc,recall：
+
+```
+1.person:
+真值为person的有41张；
+预测为person的有25张；
+真值为person，且预测为person的有23张；
+精度为：23/25=92%
+召回率为：23/41=56.1%
+
+```
+
+```
+2.outdoor:
+真值为outdoor的有22张；
+预测为outdoor的有14张；
+真值为outdoor，且预测为outdoor的有13张；
+精度为：13/14=92.9%
+召回率为：13/22=59.1%
+```
+
+```
+3.selfie:
+真值为selfie的有16张；
+预测为selfie的有13张；
+真值为selfie，且预测为selfie的有12张；
+精度为：12/13=92.3%
+召回率为：12/16=75%
+```
+
+
+
+以下的标签由于出现的次数很少，决定每次随机取200张图像（有标签和无标签各随机选择100张）进行统计各项指标：
+
+```
+4.sky:
+真值为sky的有32张；
+预测为sky的有11张；
+真值为sky，且预测为sky的有11张；
+精度为：11/11=100%
+召回率为：11/32=34.4%
+```
+
+```
+5.scenery:
+真值为scenery的有28张；
+预测为scenery的有7张；
+真值为scenery，且预测为scenery的有7张；
+精度为：7/7/=100%
+召回率为：7/28=25%
+```
+
+```
+6.clouds:
+真值为clouds的有8张；
+预测为clouds的有5张；
+真值为clouds，且预测为clouds的有3张；
+精度为：3/5=60%
+召回率为：3/8=37.5%
+```
+
+```
+7.indoor:
+真值为indoor的有32张；
+预测为indoor的有10张；
+真值为indoor，且预测为indoor的有7张；
+精度为：7/10=70%
+召回率为：7/32=21.9%
+```
+
+```
+8.water:
+真值为water的有12张；
+预测为water的有8张；
+真值为water，且预测为water的有5张；
+精度为：5/8=62.5%
+召回率为：5/12=41.7%
+```
+
+
+
+以下的标签由于出现的次数更少，决定每次随机取400张图像（有标签和无标签各随机选择200张）进行统计各项指标：
+
+```
+9.animal:
+真值为animal的有11张；
+预测为animal的有5张；
+真值为animal，且预测为animal的有4张；
+精度为：4/5=80%
+召回率为：4/11=36.4%
+```
+
+```
+10.building:
+真值为building的有28张；
+预测为building的有10张；
+真值为building，且预测为building的有10张；
+精度为：10/10=100%
+召回率为：10/28=35.7%
+```
+
+```
+11.food:
+真值为food的有47张；
+预测为food的有5张；
+真值为food，且预测为food的有5张；
+精度为：5/5=100%
+召回率为：5/47=10.6%
+```
+
 
 
 

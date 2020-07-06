@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 class ShuffleV2Block(nn.Module):
-    def __init__(self, inp, oup, mid_channels, *, ksize, stride):
+    def __init__(self, inp, oup, mid_channels, ksize, stride):
         super(ShuffleV2Block, self).__init__()
         self.stride = stride
         assert stride in [1, 2]
